@@ -1,214 +1,561 @@
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
 /**
- * EmployeeManagementSystemTest.java
- * Plain-Java test harness — no JUnit required.
- * 17 Black-Box tests (BB-01 … BB-17)
- * 16 White-Box tests (WB-01 … WB-16)
- * Run: java EmployeeManagementSystemTest
+ * JUnit 5 tests for EmployeeManagementSystem.
+ * Must live in the same package as EmployeeManagementSystem (default package here),
+ * because the validate* helpers are package-private.
  */
-public class EmployeeManagementSystemTest {
+class EmployeeManagementSystemTest {
 
-    // ── tiny assertion helpers ────────────────────────────────────────────────
-    private static int pass = 0, fail = 0;
+    private static final double DELTA = 0.001;
 
-    private static void check(String id, boolean expected, boolean actual) {
-        String result = (expected == actual) ? "PASS" : "FAIL";
-        System.out.printf("%-6s | expected=%-5s | actual=%-5s | %s%n",
-                id, expected, actual, result);
-        if (result.equals("PASS")) pass++; else fail++;
+    private EmployeeManagementSystem system;
+
+    @BeforeEach
+    void setUp() {
+        system = new EmployeeManagementSystem();
     }
 
-    private static void checkDouble(String id, double expected, double actual, double delta) {
-        boolean ok = Math.abs(expected - actual) <= delta;
-        String result = ok ? "PASS" : "FAIL";
-        System.out.printf("%-6s | expected=%-10.2f | actual=%-10.2f | %s%n",
-                id, expected, actual, result);
-        if (ok) pass++; else fail++;
+    private static Employee emp(String id, double salary) {
+        return new Employee(id, "Alice", "IT", salary);
     }
 
-    private static void checkInt(String id, int expected, int actual) {
-        boolean ok = expected == actual;
-        String result = ok ? "PASS" : "FAIL";
-        System.out.printf("%-6s | expected=%-5d | actual=%-5d | %s%n",
-                id, expected, actual, result);
-        if (ok) pass++; else fail++;
+    private static String money(double value) {
+        return String.format("%.2f", value);
     }
 
-    private static void checkContains(String id, String keyword, String actual) {
-        boolean ok = actual != null && actual.contains(keyword);
-        String result = ok ? "PASS" : "FAIL";
-        System.out.printf("%-6s | expected contains='%s' | actual='%.40s...' | %s%n",
-                id, keyword, actual == null ? "null" : actual, result);
-        if (ok) pass++; else fail++;
+    // ------------------------------------------------------------------
+    // FR1: Employee management
+    // ------------------------------------------------------------------
+    @Nested
+    @DisplayName("FR1 - add / remove / update")
+    class EmployeeManagement {
+
+        @Test
+        void addEmployee_validEmployee_appearsInReport() {
+            system.addEmployee(emp("E001", 300000));
+            assertTrue(system.generateReport().contains("E001"));
+        }
+
+        @Test
+        void addEmployee_null_throws() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> system.addEmployee(null));
+            assertEquals("Employee cannot be null", ex.getMessage());
+        }
+
+        @Test
+        void addEmployee_negativeSalary_throws() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> system.addEmployee(emp("E001", -1)));
+            assertEquals("Salary cannot be negative", ex.getMessage());
+        }
+
+        @Test
+        void addEmployee_duplicateId_throwsAndKeepsOriginal() {
+            system.addEmployee(emp("E001", 300000));
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> system.addEmployee(new Employee("E001", "Bob", "HR", 400000)));
+            assertEquals("Duplicate employee ID: E001", ex.getMessage());
+
+            String report = system.generateReport();
+            assertTrue(report.contains("Alice"));
+            assertFalse(report.contains("Bob"));
+        }
+
+        @Test
+        void removeEmployee_existing_returnsTrueAndRemoves() {
+            system.addEmployee(emp("E001", 300000));
+            assertTrue(system.removeEmployee("E001"));
+            assertEquals("No employees found.", system.generateReport());
+        }
+
+        @Test
+        void removeEmployee_unknownId_returnsFalse() {
+            system.addEmployee(emp("E001", 300000));
+            assertFalse(system.removeEmployee("NOPE"));
+            assertTrue(system.generateReport().contains("E001"));
+        }
+
+        @Test
+        void removeEmployee_onlyRemovesMatchingEmployee() {
+            system.addEmployee(emp("E001", 300000));
+            system.addEmployee(new Employee("E002", "Bob", "HR", 400000));
+            assertTrue(system.removeEmployee("E001"));
+
+            String report = system.generateReport();
+            assertFalse(report.contains("E001"));
+            assertTrue(report.contains("E002"));
+        }
+
+        @Test
+        void updateEmployee_existing_changesSalary() {
+            system.addEmployee(emp("E001", 300000));
+            assertTrue(system.updateEmployee("E001", 450000));
+
+            // Net pay is derived from the updated salary: 450000 * 0.85
+            assertEquals(382500.0, system.processPayment("E001"), DELTA);
+        }
+
+        @Test
+        void updateEmployee_unknownId_returnsFalse() {
+            assertFalse(system.updateEmployee("NOPE", 100000));
+        }
+
+        @Test
+        void updateEmployee_negativeSalary_throwsAndLeavesSalaryUnchanged() {
+            system.addEmployee(emp("E001", 300000));
+            assertThrows(IllegalArgumentException.class, () -> system.updateEmployee("E001", -5));
+            assertEquals(255000.0, system.processPayment("E001"), DELTA); // 300000 * 0.85
+        }
+
+        @Test
+        void updateEmployee_unknownIdWithNegativeSalary_returnsFalse() {
+            // Current behaviour: salary is only validated once the employee is found
+            assertFalse(system.updateEmployee("NOPE", -5));
+        }
     }
 
-    // ── main ──────────────────────────────────────────────────────────────────
-    public static void main(String[] args) {
+    // ------------------------------------------------------------------
+    // FR2: Payment processing
+    // ------------------------------------------------------------------
+    @Nested
+    @DisplayName("FR2 - net pay calculation")
+    class PaymentProcessing {
 
-        System.out.println("========== BLACK-BOX TESTS ==========");
-        runBlackBoxTests();
+        @Test
+        void calculateNetPay_lowBracket_tenPercentTaxPlusPension() {
+            // 300000 - 10% - 5% = 255000
+            assertEquals(255000.0, system.calculateNetPay(emp("E001", 300000)), DELTA);
+        }
 
-        System.out.println("\n========== WHITE-BOX TESTS ==========");
-        runWhiteBoxTests();
+        @Test
+        void calculateNetPay_upperBoundOfLowBracket_500000() {
+            // 500000 still uses 10% tax: 500000 * 0.85
+            assertEquals(425000.0, system.calculateNetPay(emp("E001", 500000)), DELTA);
+        }
 
-        System.out.printf("%nTOTAL pass=%d fail=%d%n", pass, fail);
+        @Test
+        void calculateNetPay_justAboveLowBracket_usesTwentyPercentTax() {
+            double salary = 500000.01;
+            assertEquals(salary * 0.75, system.calculateNetPay(emp("E001", salary)), DELTA);
+        }
+
+        @Test
+        void calculateNetPay_middleBracket_twentyPercentTax() {
+            // 750000 - 20% - 5% = 562500
+            assertEquals(562500.0, system.calculateNetPay(emp("E001", 750000)), DELTA);
+        }
+
+        @Test
+        void calculateNetPay_upperBoundOfMiddleBracket_1000000() {
+            // 1,000,000 still uses 20% tax: 1000000 * 0.75
+            assertEquals(750000.0, system.calculateNetPay(emp("E001", 1000000)), DELTA);
+        }
+
+        @Test
+        void calculateNetPay_justAboveMiddleBracket_usesThirtyPercentTax() {
+            double salary = 1000000.01;
+            assertEquals(salary * 0.65, system.calculateNetPay(emp("E001", salary)), DELTA);
+        }
+
+        @Test
+        void calculateNetPay_highBracket_thirtyPercentTax() {
+            // 2,000,000 - 30% - 5% = 1,300,000
+            assertEquals(1300000.0, system.calculateNetPay(emp("E001", 2000000)), DELTA);
+        }
+
+        @Test
+        void calculateNetPay_zeroSalary_returnsZero() {
+            assertEquals(0.0, system.calculateNetPay(emp("E001", 0)), DELTA);
+        }
+
+        @Test
+        void calculateNetPay_storesResultOnEmployee() {
+            Employee e = emp("E001", 300000);
+            assertEquals(0.0, e.getNetPay(), DELTA);
+            double net = system.calculateNetPay(e);
+            assertEquals(net, e.getNetPay(), DELTA);
+        }
+
+        @Test
+        void processPayment_existingEmployee_returnsNetPay() {
+            system.addEmployee(emp("E001", 300000));
+            Double net = system.processPayment("E001");
+            assertNotNull(net);
+            assertEquals(255000.0, net, DELTA);
+        }
+
+        @Test
+        void processPayment_unknownEmployee_returnsNull() {
+            assertNull(system.processPayment("NOPE"));
+        }
     }
 
-    // =========================================================================
-    //  BLACK-BOX TESTS  (BB-01 … BB-17)
-    //  Based purely on the requirements — no knowledge of internal code needed.
-    // =========================================================================
-    private static void runBlackBoxTests() {
+    // ------------------------------------------------------------------
+    // FR3: Reporting
+    // ------------------------------------------------------------------
+    @Nested
+    @DisplayName("FR3 - report generation")
+    class Reporting {
 
-        EmployeeManagementSystem sys = new EmployeeManagementSystem();
+        @Test
+        void generateReport_noEmployees_returnsMessage() {
+            assertEquals("No employees found.", system.generateReport());
+        }
 
-        // BB-01: Add a valid employee → should return true
-        check("BB-01", true, sys.addEmployee("E001", "Alice", "Engineering", 3000));
+        @Test
+        void generateReport_containsHeaderAndEmployeeDetails() {
+            system.addEmployee(new Employee("E001", "Alice", "IT", 300000));
+            String report = system.generateReport();
 
-        // BB-02: Add another valid employee → should return true
-        check("BB-02", true, sys.addEmployee("E002", "Bob", "Management", 4800));
+            for (String header : new String[] {"ID", "Name", "Department", "BaseSalary", "NetPay"}) {
+                assertTrue(report.contains(header), "Missing header: " + header);
+            }
+            assertTrue(report.contains("E001"));
+            assertTrue(report.contains("Alice"));
+            assertTrue(report.contains("IT"));
+            assertTrue(report.contains(money(300000)));
+        }
 
-        // BB-03: Add employee with empty ID → should return false
-        check("BB-03", false, sys.addEmployee("", "Carol", "HR", 2000));
+        @Test
+        void generateReport_netPayIsZeroUntilPaymentProcessed() {
+            system.addEmployee(emp("E001", 300000));
+            assertTrue(system.generateReport().contains(money(0)));
+            assertFalse(system.generateReport().contains(money(255000)));
+        }
 
-        // BB-04: Add employee with empty name → should return false
-        check("BB-04", false, sys.addEmployee("E003", "", "HR", 2000));
+        @Test
+        void generateReport_showsNetPayAfterPaymentProcessed() {
+            system.addEmployee(emp("E001", 300000));
+            system.processPayment("E001");
+            assertTrue(system.generateReport().contains(money(255000)));
+        }
 
-        // BB-05: Add employee with negative salary → should return false
-        check("BB-05", false, sys.addEmployee("E004", "Dave", "IT", -500));
+        @Test
+        void generateReport_listsAllEmployeesOnePerLine() {
+            system.addEmployee(emp("E001", 300000));
+            system.addEmployee(new Employee("E002", "Bob", "HR", 400000));
+            system.addEmployee(new Employee("E003", "Cara", "Finance", 600000));
 
-        // BB-06: Add duplicate employee ID → should return false
-        check("BB-06", false, sys.addEmployee("E001", "Eve", "Finance", 3500));
-
-        // BB-07: Employee count after 2 successful adds → should be 2
-        checkInt("BB-07", 2, sys.getEmployeeCount());
-
-        // BB-08: Remove existing employee → should return true
-        check("BB-08", true, sys.removeEmployee("E002"));
-
-        // BB-09: Remove non-existent employee → should return false
-        check("BB-09", false, sys.removeEmployee("E999"));
-
-        // BB-10: Employee count after removal → should be 1
-        checkInt("BB-10", 1, sys.getEmployeeCount());
-
-        // BB-11: Process payment for non-existent employee → should return -1
-        checkDouble("BB-11", -1.0, sys.processPayment("E999", 160, 0), 0.001);
-
-        // BB-12: Process payment with negative hours → should return -1
-        checkDouble("BB-12", -1.0, sys.processPayment("E001", -10, 0), 0.001);
-
-        // BB-13: Tax boundary — gross exactly 5000 → 25% tax
-        //   E001: baseSalary=3000, hourlyRate=18.75
-        //   Need gross=5000 → hoursWorked = 5000/18.75 = 266.67 hours, 0 overtime
-        //   netPay = 5000 * 0.75 = 3750.00
-        EmployeeManagementSystem sys2 = new EmployeeManagementSystem();
-        sys2.addEmployee("E010", "Frank", "Engineering", 3000);
-        // hoursWorked to hit exactly 5000 gross: 5000 / (3000/160) = 266.6667
-        checkDouble("BB-13", 3750.00, sys2.processPayment("E010", 266.6667, 0), 0.10);
-
-        // BB-14: Tax below boundary — gross < 5000 → 15% tax
-        //   E001 baseSalary=3000, 160 hours, 0 OT → gross=3000, net=3000*0.85=2550
-        checkDouble("BB-14", 2550.00, sys.processPayment("E001", 160, 0), 0.001);
-
-        // BB-15: Overtime pay — 10 OT hours on E001 (baseSalary=3000)
-        //   hourlyRate=18.75, OT pay=18.75*1.5*10=281.25
-        //   gross=3000+281.25=3281.25, tax=15%, net=3281.25*0.85=2789.0625
-        EmployeeManagementSystem sys3 = new EmployeeManagementSystem();
-        sys3.addEmployee("E020", "Grace", "Engineering", 3000);
-        checkDouble("BB-15", 2789.06, sys3.processPayment("E020", 160, 10), 0.01);
-
-        // BB-16: Management bonus — Bob baseSalary=4800, 160 hours, 0 OT
-        //   hourlyRate=30, gross=4800, +10%=5280, tax=25%, net=5280*0.75=3960
-        EmployeeManagementSystem sys4 = new EmployeeManagementSystem();
-        sys4.addEmployee("E030", "Henry", "Management", 4800);
-        checkDouble("BB-16", 3960.00, sys4.processPayment("E030", 160, 0), 0.001);
-
-        // BB-17: Generate report when no payments processed → contains "No payroll"
-        EmployeeManagementSystem sys5 = new EmployeeManagementSystem();
-        checkContains("BB-17", "No payroll", sys5.generatePayrollReport());
+            String[] lines = system.generateReport().trim().split("\\R");
+            assertEquals(4, lines.length); // header + 3 employees
+        }
     }
 
-    // =========================================================================
-    //  WHITE-BOX TESTS  (WB-01 … WB-16)
-    //  Based on internal branches in the source code.
-    // =========================================================================
-    private static void runWhiteBoxTests() {
+    // ------------------------------------------------------------------
+    // Input validation helpers
+    // ------------------------------------------------------------------
+    @Nested
+    @DisplayName("Validation - ID")
+    class IdValidation {
 
-        // WB-01: Branch — empty ID check (id.trim().isEmpty())
-        EmployeeManagementSystem s = new EmployeeManagementSystem();
-        check("WB-01", false, s.addEmployee("   ", "Alice", "IT", 2000));
+        @ParameterizedTest
+        @ValueSource(strings = {"E001", "a", "AB-12", "12345678"})
+        void validId_isAccepted(String input) {
+            assertEquals(input, EmployeeManagementSystem.validateId(input));
+        }
 
-        // WB-02: Branch — empty name check (name.trim().isEmpty())
-        check("WB-02", false, s.addEmployee("E001", "   ", "IT", 2000));
+        @Test
+        void validId_isTrimmed() {
+            assertEquals("E001", EmployeeManagementSystem.validateId("  E001  "));
+        }
 
-        // WB-03: Branch — negative salary check (baseSalary < 0)
-        check("WB-03", false, s.addEmployee("E001", "Alice", "IT", -1));
+        @ParameterizedTest
+        @ValueSource(strings = {"", "   "})
+        void emptyId_throws(String input) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateId(input));
+            assertEquals("ID cannot be empty.", ex.getMessage());
+        }
 
-        // WB-04: Branch — duplicate ID check (employees.containsKey(id))
-        s.addEmployee("E001", "Alice", "IT", 2000);
-        check("WB-04", false, s.addEmployee("E001", "Bob", "IT", 3000));
+        @ParameterizedTest
+        @ValueSource(strings = {"E 01", "E_01", "E@01", "E.01"})
+        void idWithInvalidCharacters_throws(String input) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateId(input));
+            assertTrue(ex.getMessage().contains("letters, digits and hyphens"));
+        }
 
-        // WB-05: Branch — negative hoursWorked check (hoursWorked < 0)
-        checkDouble("WB-05", -1.0, s.processPayment("E001", -1, 0), 0.001);
+        @Test
+        void idLongerThanEight_throws() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateId("123456789"));
+            assertEquals("ID cannot be longer than 8 characters.", ex.getMessage());
+        }
+    }
 
-        // WB-06: Branch — negative overtimeHours check (overtimeHours < 0)
-        checkDouble("WB-06", -1.0, s.processPayment("E001", 160, -5), 0.001);
+    @Nested
+    @DisplayName("Validation - Name")
+    class NameValidation {
 
-        // WB-07: Branch — Management bonus applied (department == "Management")
-        EmployeeManagementSystem s2 = new EmployeeManagementSystem();
-        s2.addEmployee("M001", "Manager", "Management", 3200);
-        // hourlyRate=20, gross=3200, +10%=3520, tax=15%, net=3520*0.85=2992
-        checkDouble("WB-07", 2992.00, s2.processPayment("M001", 160, 0), 0.001);
+        @ParameterizedTest
+        @ValueSource(strings = {"Alice", "Mary O'Neil", "Jean-Luc", "J. Smith"})
+        void validName_isAccepted(String input) {
+            assertEquals(input, EmployeeManagementSystem.validateName(input));
+        }
 
-        // WB-08: Branch — Non-Management, no bonus applied
-        EmployeeManagementSystem s3 = new EmployeeManagementSystem();
-        s3.addEmployee("E002", "Engineer", "Engineering", 3200);
-        // gross=3200, tax=15%, net=3200*0.85=2720
-        checkDouble("WB-08", 2720.00, s3.processPayment("E002", 160, 0), 0.001);
+        @Test
+        void validName_isTrimmed() {
+            assertEquals("Alice", EmployeeManagementSystem.validateName("  Alice "));
+        }
 
-        // WB-09: Branch — grossPay >= 5000 → taxRate = 0.25
-        EmployeeManagementSystem s4 = new EmployeeManagementSystem();
-        s4.addEmployee("E003", "Senior", "Engineering", 5000);
-        // hourlyRate=31.25, gross=5000, tax=25%, net=5000*0.75=3750
-        checkDouble("WB-09", 3750.00, s4.processPayment("E003", 160, 0), 0.001);
+        @Test
+        void nameAtMaxLength_isAccepted() {
+            String name = "A".repeat(15);
+            assertEquals(name, EmployeeManagementSystem.validateName(name));
+        }
 
-        // WB-10: Branch — grossPay < 5000 → taxRate = 0.15
-        EmployeeManagementSystem s5 = new EmployeeManagementSystem();
-        s5.addEmployee("E004", "Junior", "Engineering", 2400);
-        // hourlyRate=15, gross=2400, tax=15%, net=2400*0.85=2040
-        checkDouble("WB-10", 2040.00, s5.processPayment("E004", 160, 0), 0.001);
+        @Test
+        void emptyName_throws() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateName("   "));
+            assertEquals("Name cannot be empty.", ex.getMessage());
+        }
 
-        // WB-11: Branch — empty payroll report (paymentRecords.isEmpty())
-        EmployeeManagementSystem s6 = new EmployeeManagementSystem();
-        checkContains("WB-11", "No payroll", s6.generatePayrollReport());
+        @Test
+        void nameZero_throws() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateName("0"));
+            assertTrue(ex.getMessage().contains("Name cannot be 0"));
+        }
 
-        // WB-12: Branch — top earner identified in report
-        EmployeeManagementSystem s7 = new EmployeeManagementSystem();
-        s7.addEmployee("E005", "LowPay",  "Engineering", 2000);
-        s7.addEmployee("E006", "HighPay", "Engineering", 6400);
-        s7.processPayment("E005", 160, 0);
-        s7.processPayment("E006", 160, 0);
-        checkContains("WB-12", "HighPay", s7.generatePayrollReport());
+        @ParameterizedTest
+        @ValueSource(strings = {"1Alice", "Alice3", "-Alice", "Al!ce", "Al_ice"})
+        void nameWithInvalidCharacters_throws(String input) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateName(input));
+            assertTrue(ex.getMessage().contains("Name must start with a letter"));
+        }
 
-        // WB-13: Branch — removeEmployee success path (employee exists)
-        EmployeeManagementSystem s8 = new EmployeeManagementSystem();
-        s8.addEmployee("E007", "ToRemove", "HR", 2500);
-        check("WB-13", true, s8.removeEmployee("E007"));
+        @Test
+        void nameLongerThanFifteen_throws() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateName("A".repeat(16)));
+            assertEquals("Name cannot be longer than 15 characters.", ex.getMessage());
+        }
+    }
 
-        // WB-14: Branch — removeEmployee failure path (employee not found)
-        check("WB-14", false, s8.removeEmployee("E007")); // already removed
+    @Nested
+    @DisplayName("Validation - Department")
+    class DepartmentValidation {
 
-        // WB-15: Branch — getEmployeeCount reflects correct count after adds
-        EmployeeManagementSystem s9 = new EmployeeManagementSystem();
-        s9.addEmployee("E008", "One",   "IT", 2000);
-        s9.addEmployee("E009", "Two",   "IT", 2000);
-        s9.addEmployee("E010", "Three", "IT", 2000);
-        checkInt("WB-15", 3, s9.getEmployeeCount());
+        @ParameterizedTest
+        @ValueSource(strings = {"IT", "R&D", "Human-Res", "Sales Ops"})
+        void validDepartment_isAccepted(String input) {
+            assertEquals(input, EmployeeManagementSystem.validateDepartment(input));
+        }
 
-        // WB-16: Branch — overtime pay calculation (hourlyRate * 1.5 * overtimeHours)
-        EmployeeManagementSystem s10 = new EmployeeManagementSystem();
-        s10.addEmployee("E011", "OTWorker", "Engineering", 3200);
-        // hourlyRate=20, regular=3200, OT=20*1.5*20=600, gross=3800, tax=15%, net=3800*0.85=3230
-        checkDouble("WB-16", 3230.00, s10.processPayment("E011", 160, 20), 0.001);
+        @Test
+        void departmentAtMaxLength_isAccepted() {
+            String dept = "D".repeat(12);
+            assertEquals(dept, EmployeeManagementSystem.validateDepartment(dept));
+        }
+
+        @Test
+        void emptyDepartment_throws() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateDepartment(""));
+            assertEquals("Department cannot be empty.", ex.getMessage());
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"IT2", "1IT", "&IT", "I.T"})
+        void departmentWithInvalidCharacters_throws(String input) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateDepartment(input));
+            assertTrue(ex.getMessage().contains("Department must start with a letter"));
+        }
+
+        @Test
+        void departmentLongerThanTwelve_throws() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateDepartment("D".repeat(13)));
+            assertEquals("Department cannot be longer than 12 characters.", ex.getMessage());
+        }
+    }
+
+    @Nested
+    @DisplayName("Validation - Salary")
+    class SalaryValidation {
+
+        @Test
+        void validSalary_integerAndDecimal() {
+            assertEquals(450000.0, EmployeeManagementSystem.validateSalary("450000"), DELTA);
+            assertEquals(450000.50, EmployeeManagementSystem.validateSalary("450000.50"), DELTA);
+        }
+
+        @Test
+        void validSalary_isTrimmed() {
+            assertEquals(100000.0, EmployeeManagementSystem.validateSalary("  100000 "), DELTA);
+        }
+
+        @Test
+        void salaryAtMinimum_60000_isAccepted() {
+            assertEquals(60000.0, EmployeeManagementSystem.validateSalary("60000"), DELTA);
+        }
+
+        @Test
+        void salaryJustBelowMinimum_throws() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateSalary("59999.99"));
+            assertEquals("Salary is too little", ex.getMessage());
+        }
+
+        @Test
+        void emptySalary_throws() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateSalary(" "));
+            assertEquals("Salary cannot be empty.", ex.getMessage());
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"abc", "12,000", "1 000", "$5000"})
+        void nonNumericSalary_throws(String input) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateSalary(input));
+            assertTrue(ex.getMessage().contains("valid number"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"NaN", "Infinity", "-Infinity"})
+        void nanAndInfinity_throw(String input) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateSalary(input));
+            assertEquals("Salary must be a finite number.", ex.getMessage());
+        }
+
+        @Test
+        void negativeSalary_throws() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateSalary("-100"));
+            assertEquals("Salary cannot be negative.", ex.getMessage());
+        }
+
+        @Test
+        void zeroSalary_throws() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> EmployeeManagementSystem.validateSalary("0"));
+            assertEquals("Salary must be greater than zero.", ex.getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // main(): console flow, driven with simulated System.in / System.out
+    // ------------------------------------------------------------------
+    @Nested
+    @DisplayName("main() console flow")
+    class MainFlow {
+
+        private InputStream originalIn;
+        private PrintStream originalOut;
+        private ByteArrayOutputStream captured;
+
+        @BeforeEach
+        void redirectStreams() {
+            originalIn = System.in;
+            originalOut = System.out;
+            captured = new ByteArrayOutputStream();
+            System.setOut(new PrintStream(captured, true, StandardCharsets.UTF_8));
+        }
+
+        @AfterEach
+        void restoreStreams() {
+            System.setIn(originalIn);
+            System.setOut(originalOut);
+        }
+
+        private String runMain(String input) {
+            System.setIn(new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)));
+            EmployeeManagementSystem.main(new String[0]);
+            return captured.toString(StandardCharsets.UTF_8);
+        }
+
+        @Test
+        void exitImmediately_printsEmptyReport() {
+            String out = runMain("0\n");
+            assertTrue(out.contains("No employees found."));
+        }
+
+        @Test
+        void addOneEmployee_showsNetPayAndReport() {
+            String out = runMain("E001\nAlice\nIT\n450000\n0\n");
+
+            assertTrue(out.contains("Employee E001 added. Net pay: " + money(382500)));
+            assertTrue(out.contains("Alice"));
+            assertTrue(out.contains("BaseSalary"));
+        }
+
+        @Test
+        void invalidId_showsErrorAndContinues() {
+            String out = runMain("bad id\n0\n");
+
+            assertTrue(out.contains("Invalid input: ID may only contain letters, digits and hyphens"));
+            assertTrue(out.contains("No employees found."));
+        }
+
+        @Test
+        void invalidFields_arePromptedAgainUntilValid() {
+            // empty name -> retry, bad department -> retry, salary below minimum -> retry
+            String input = String.join("\n",
+                    "E001",
+                    "", "Alice",
+                    "IT2", "IT",
+                    "100", "abc", "450000",
+                    "0") + "\n";
+            String out = runMain(input);
+
+            assertTrue(out.contains("Invalid input: Name cannot be empty."));
+            assertTrue(out.contains("Invalid input: Department must start with a letter"));
+            assertTrue(out.contains("Invalid input: Salary is too little"));
+            assertTrue(out.contains("Invalid input: Salary must be a valid number"));
+            assertTrue(out.contains("Employee E001 added."));
+        }
+
+        @Test
+        void duplicateId_isRejectedWithMessage() {
+            String input = "E001\nAlice\nIT\n450000\n"
+                         + "E001\nBob\nHR\n300000\n"
+                         + "0\n";
+            String out = runMain(input);
+
+            assertTrue(out.contains("Could not add employee: Duplicate employee ID: E001"));
+            assertTrue(out.contains("Alice"));
+            assertFalse(out.contains("Bob  "), "Duplicate employee must not appear in the report");
+        }
+
+        @Test
+        void multipleEmployees_allAppearInReport() {
+            String input = "E001\nAlice\nIT\n450000\n"
+                         + "E002\nBob\nHR\n750000\n"
+                         + "0\n";
+            String out = runMain(input);
+
+            assertTrue(out.contains("Employee E001 added. Net pay: " + money(382500)));
+            assertTrue(out.contains("Employee E002 added. Net pay: " + money(562500)));
+        }
+
+        @Test
+        void inputEndsUnexpectedly_stillGeneratesReport() {
+            // Stream ends while waiting for the department
+            String out = runMain("E001\nAlice\n");
+
+            assertTrue(out.contains("Input ended unexpectedly"));
+            assertTrue(out.contains("No employees found."));
+        }
     }
 }
